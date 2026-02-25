@@ -1,0 +1,176 @@
+import { useState, useEffect } from 'react'
+import { useWebSocket } from './hooks/useWebSocket'
+// Import relatif pour éviter les erreurs de module @shared
+import type { QuizPhase, QuizQuestion, ServerMessage } from '../../packages/shared-types/index'
+import CreateQuiz from './components/CreateQuiz'
+import Lobby from './components/Lobby'
+import QuestionView from './components/QuestionView'
+import Results from './components/Results'
+import Leaderboard from './components/Leaderboard'
+
+const WS_URL = 'ws://localhost:3001'
+
+function App() {
+  const { status, sendMessage, lastMessage } = useWebSocket(WS_URL)
+
+  // --- Etats de l'application ---
+  const [phase, setPhase] = useState<QuizPhase | 'create'>('create')
+  const [quizCode, setQuizCode] = useState('')
+  const [players, setPlayers] = useState<string[]>([])
+  const [currentQuestion, setCurrentQuestion] = useState<Omit<QuizQuestion, 'correctIndex'> | null>(null)
+  const [questionIndex, setQuestionIndex] = useState(0)
+  const [questionTotal, setQuestionTotal] = useState(0)
+  const [remaining, setRemaining] = useState(0)
+  const [answerCount, setAnswerCount] = useState(0)
+  const [correctIndex, setCorrectIndex] = useState(-1)
+  const [distribution, setDistribution] = useState<number[]>([])
+  const [rankings, setRankings] = useState<{ name: string; score: number }[]>([])
+
+  // --- Traitement des messages du serveur ---
+  useEffect(() => {
+    if (!lastMessage) return
+
+    const msg = lastMessage as ServerMessage
+
+    switch (msg.type) {
+      case 'sync':
+        if (msg.data && (msg.data as any).quizCode) {
+          setQuizCode((msg.data as any).quizCode)
+          setPhase(msg.phase)
+        }
+        break
+
+      case 'joined':
+        setPlayers(msg.players)
+        break
+
+      case 'question':
+        setCurrentQuestion(msg.question)
+        setQuestionIndex(msg.index)
+        setQuestionTotal(msg.total)
+        setRemaining(msg.question.timerSec)
+        setAnswerCount(0)
+        setPhase('question')
+        break
+
+      case 'tick':
+        setRemaining(msg.remaining)
+        break
+
+      case 'results':
+        setCorrectIndex(msg.correctIndex)
+        setDistribution(msg.distribution)
+        const totalAnswers = msg.distribution.reduce((acc, curr) => acc + curr, 0)
+        setAnswerCount(totalAnswers)
+        setPhase('results')
+        break
+
+      case 'leaderboard':
+        setRankings(msg.rankings)
+        setPhase('leaderboard')
+        break
+
+      case 'ended':
+        setPhase('ended')
+        break
+
+      case 'error':
+        alert(`Erreur serveur: ${msg.message}`)
+        break
+    }
+  }, [lastMessage])
+
+  // --- Handlers (Envoi de messages au serveur) ---
+
+  /** * CORRECTION : On envoie title et questions directement, 
+   * SANS l'objet intermédiaire "quiz"
+   */
+  const handleCreateQuiz = (title: string, questions: QuizQuestion[]) => {
+    sendMessage({
+      type: 'host:create',
+      title,      // <--- Directement à la racine
+      questions   // <--- Directement à la racine
+    })
+  }
+
+  const handleStart = () => {
+    sendMessage({ type: 'host:start' })
+  }
+
+  const handleNext = () => {
+    sendMessage({ type: 'host:next' })
+  }
+
+  // --- Rendu par phase ---
+  const renderPhase = () => {
+    switch (phase) {
+      case 'create':
+        return <CreateQuiz onSubmit={handleCreateQuiz} />
+
+      case 'lobby':
+        return (
+          <Lobby
+            quizCode={quizCode}
+            players={players}
+            onStart={handleStart}
+          />
+        )
+
+      case 'question':
+        return currentQuestion ? (
+          <QuestionView
+            question={currentQuestion}
+            index={questionIndex}
+            total={questionTotal}
+            remaining={remaining}
+            answerCount={answerCount}
+            totalPlayers={players.length}
+          />
+        ) : null
+
+      case 'results':
+        return currentQuestion ? (
+          <Results
+            correctIndex={correctIndex}
+            distribution={distribution}
+            choices={currentQuestion.choices}
+            onNext={handleNext}
+          />
+        ) : null
+
+      case 'leaderboard':
+        return <Leaderboard rankings={rankings} />
+
+      case 'ended':
+        return (
+          <div className="phase-container">
+            <h1>Quiz terminé !</h1>
+            <button className="btn-primary" onClick={() => window.location.reload()}>
+              Nouveau quiz
+            </button>
+          </div>
+        )
+
+      default:
+        return null
+    }
+  }
+
+  return (
+    <div className="app">
+      <header className="app-header">
+        <div className="header-content">
+          <h1>HETIC Slides Quiz</h1>
+          <span className={`status-badge status-${status}`}>
+            {status === 'connected' ? '● Connecté' : '○ Déconnecté'}
+          </span>
+        </div>
+      </header>
+      <main className="app-main">
+        {renderPhase()}
+      </main>
+    </div>
+  )
+}
+
+export default App
